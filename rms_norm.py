@@ -125,24 +125,37 @@ if __name__ == "__main__":
   print(scaled_normalized_array_x2)
 
 
-def rms_norm_headwise_no_params(x, eps=1e-5):
+def rms_norm_headwise_no_params(x, num_heads, eps=1e-5):
   """
-  Performs head-wise Root Mean Square (RMS) normalization on a 4D input array.
+  Performs head-wise Root Mean Square (RMS) normalization on a 3D input array.
+  The input is reshaped to 4D for head-wise normalization and then reshaped back.
 
   Args:
-    x: A 4D NumPy array with shape (batch_size, seq_len, num_heads, head_dim).
-       Normalization is performed over the last dimension (head_dim).
+    x: A 3D NumPy array with shape (batch_size, seq_len, dim).
+    num_heads: An integer, the number of attention heads.
     eps: A small float value to prevent division by zero.
 
   Returns:
-    A NumPy array with the same shape as x, but with each head's activations
-    normalized by their own RMS.
+    A 3D NumPy array with the same shape as x, (batch_size, seq_len, dim),
+    normalized head-wise.
   """
-  if x.ndim != 4:
-    raise ValueError(f"Input array x must be 4-dimensional (batch_size, seq_len, num_heads, head_dim), but got {x.ndim} dimensions.")
+  if x.ndim != 3:
+    raise ValueError(f"Input array x must be 3-dimensional (batch_size, seq_len, dim), but got {x.ndim} dimensions.")
 
-  # Calculate the square of the input x
-  x_squared = np.square(x)
+  batch_size, seq_len, dim = x.shape
+
+  if not isinstance(num_heads, int) or num_heads <= 0:
+    raise ValueError(f"num_heads must be a positive integer, but got {num_heads}.")
+  if dim % num_heads != 0:
+    raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads}).")
+
+  head_dim = dim // num_heads
+
+  # Reshape x to (batch_size, seq_len, num_heads, head_dim)
+  x_reshaped = x.reshape(batch_size, seq_len, num_heads, head_dim)
+
+  # Calculate the square of the reshaped x
+  x_squared = np.square(x_reshaped)
 
   # Calculate the mean of the squared values along the last dimension (head_dim)
   # keepdims=True ensures the result has shape (batch_size, seq_len, num_heads, 1)
@@ -152,11 +165,13 @@ def rms_norm_headwise_no_params(x, eps=1e-5):
   mean_squared_eps = mean_squared + eps
 
   # Take the square root of the result to get the RMS value
-  rms_value = np.sqrt(mean_squared_eps)
+  rms_value = np.sqrt(mean_squared_eps) # Shape: (batch_size, seq_len, num_heads, 1)
 
-  # Normalize x by dividing it by this RMS value
-  # Broadcasting will handle element-wise division for each head
-  normalized_x = x / rms_value
+  # Normalize the reshaped x by dividing it by this RMS value
+  normalized_x_reshaped = x_reshaped / rms_value
+
+  # Reshape the normalized tensor back to (batch_size, seq_len, dim)
+  normalized_x = normalized_x_reshaped.reshape(batch_size, seq_len, dim)
 
   return normalized_x
 
@@ -219,35 +234,50 @@ if __name__ == "__main__":
   # rms_0_0_0 = np.sqrt(np.mean(np.square(head_0_0_0)) + 1e-5)
   # print(f"\nRMS for head (0,0,0): {rms_0_0_0}")
   # print(f"Normalized head (0,0,0) by calculation: {head_0_0_0 / rms_0_0_0}")
-  # print(f"Normalized head (0,0,0) from function: {headwise_normalized_array_x3[0, 0, 0, :]}")
+  # print(f"Normalized head (0,0,0) from function: {normalized_array_x3_3d.reshape(batch_s, seq_l, num_h, -1)[0,0,0,:]}") # Reshape to check head
 
 
-def rms_norm_headwise_with_params(x, g, eps=1e-5):
+def rms_norm_headwise_with_params(x, g, num_heads, eps=1e-5):
   """
-  Performs head-wise RMS normalization with learnable gain parameters on a 4D input.
+  Performs head-wise RMS normalization with learnable gain parameters on a 3D input.
+  The input x is reshaped to 4D for head-wise normalization and scaling,
+  then reshaped back to 3D.
 
   Args:
-    x: A 4D NumPy array with shape (batch_size, seq_len, num_heads, head_dim).
-       Normalization is performed over the last dimension (head_dim).
+    x: A 3D NumPy array with shape (batch_size, seq_len, dim).
     g: A 2D NumPy array representing the learnable gain parameters,
-       with shape (num_heads, head_dim).
+       with shape (num_heads, head_dim), where head_dim is dim / num_heads.
+    num_heads: An integer, the number of attention heads.
     eps: A small float value to prevent division by zero.
 
   Returns:
-    A NumPy array with the same shape as x, with each head's activations
-    normalized by their own RMS and scaled by corresponding gains in g.
+    A 3D NumPy array with the same shape as x, (batch_size, seq_len, dim),
+    normalized head-wise and scaled by g.
   """
-  if x.ndim != 4:
-    raise ValueError(f"Input array x must be 4-dimensional (batch_size, seq_len, num_heads, head_dim), but got {x.ndim} dimensions.")
+  if x.ndim != 3:
+    raise ValueError(f"Input array x must be 3-dimensional (batch_size, seq_len, dim), but got {x.ndim} dimensions.")
+
+  batch_size, seq_len, dim = x.shape
+
+  if not isinstance(num_heads, int) or num_heads <= 0:
+    raise ValueError(f"num_heads must be a positive integer, but got {num_heads}.")
+  if dim % num_heads != 0:
+    raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads}).")
+
+  head_dim = dim // num_heads
+
   if g.ndim != 2:
     raise ValueError(f"Gain array g must be 2-dimensional (num_heads, head_dim), but got {g.ndim} dimensions.")
-  if x.shape[2] != g.shape[0]:
-    raise ValueError(f"Dimension mismatch: x.shape[2] (num_heads in x) should be equal to g.shape[0] (num_heads in g). Got {x.shape[2]} and {g.shape[0]}.")
-  if x.shape[3] != g.shape[1]:
-    raise ValueError(f"Dimension mismatch: x.shape[3] (head_dim in x) should be equal to g.shape[1] (head_dim in g). Got {x.shape[3]} and {g.shape[1]}.")
+  if g.shape[0] != num_heads:
+    raise ValueError(f"Dimension mismatch: g.shape[0] ({g.shape[0]}) should be equal to num_heads ({num_heads}).")
+  if g.shape[1] != head_dim:
+    raise ValueError(f"Dimension mismatch: g.shape[1] ({g.shape[1]}) should be equal to head_dim ({head_dim}).")
 
-  # Calculate the square of the input x
-  x_squared = np.square(x)
+  # Reshape x to (batch_size, seq_len, num_heads, head_dim)
+  x_reshaped = x.reshape(batch_size, seq_len, num_heads, head_dim)
+
+  # Calculate the square of the reshaped x
+  x_squared = np.square(x_reshaped)
 
   # Calculate the mean of the squared values along the last dimension (head_dim)
   # keepdims=True ensures the result has shape (batch_size, seq_len, num_heads, 1)
@@ -257,17 +287,19 @@ def rms_norm_headwise_with_params(x, g, eps=1e-5):
   mean_squared_eps = mean_squared + eps
 
   # Take the square root of the result to get the RMS value
-  rms_value = np.sqrt(mean_squared_eps)
+  rms_value = np.sqrt(mean_squared_eps) # Shape: (batch_size, seq_len, num_heads, 1)
 
-  # Normalize x by dividing it by this RMS value
-  normalized_x = x / rms_value
+  # Normalize the reshaped x by dividing it by this RMS value
+  normalized_x_reshaped = x_reshaped / rms_value
 
   # Scale the normalized x by multiplying it with the gain parameter g
-  # g has shape (num_heads, head_dim). It needs to be reshaped for broadcasting with x.
-  # Reshape g to (1, 1, num_heads, head_dim) to align with x's dimensions.
-  g_reshaped = g.reshape(1, 1, g.shape[0], g.shape[1])
+  # g has shape (num_heads, head_dim). Reshape g to (1, 1, num_heads, head_dim) for broadcasting.
+  g_broadcastable = g.reshape(1, 1, num_heads, head_dim)
 
-  scaled_normalized_x = normalized_x * g_reshaped
+  scaled_normalized_x_reshaped = normalized_x_reshaped * g_broadcastable
+
+  # Reshape the result back to (batch_size, seq_len, dim)
+  scaled_normalized_x = scaled_normalized_x_reshaped.reshape(batch_size, seq_len, dim)
 
   return scaled_normalized_x
 
@@ -309,61 +341,57 @@ if __name__ == "__main__":
   print("\nNormalized and scaled array (x2):")
   print(scaled_normalized_array_x2)
 
-  # --- Example for rms_norm_headwise_no_params ---
-  print("\n\n--- Example for rms_norm_headwise_no_params ---")
-  # Create a sample NumPy array for x with a 4D shape
-  # (batch_size=1, seq_len=2, num_heads=3, head_dim=4)
-  sample_array_x3 = np.random.rand(1, 2, 3, 4)
+  # --- Example for rms_norm_headwise_no_params (3D input) ---
+  print("\n\n--- Example for rms_norm_headwise_no_params (3D input) ---")
+  # Create a sample 3D NumPy array for x (e.g., 1x2x12 for batch_size=1, seq_len=2, dim=12)
+  batch_s_hnp, seq_l_hnp, d_hnp = 1, 2, 12
+  sample_array_x3_3d = np.random.rand(batch_s_hnp, seq_l_hnp, d_hnp)
+  num_h_hnp = 3 # num_heads (e.g., 3, so head_dim would be 4)
 
-  print("\nOriginal 4D array (x3):")
-  print(sample_array_x3)
+  print(f"\nOriginal 3D array (x3_3d) shape: {sample_array_x3_3d.shape}")
+  print(sample_array_x3_3d)
+  print(f"Number of heads: {num_h_hnp}")
 
-  # Call rms_norm_headwise_no_params with this array
-  headwise_normalized_array_x3 = rms_norm_headwise_no_params(sample_array_x3)
+  # Call rms_norm_headwise_no_params with this 3D array and num_heads
+  normalized_array_x3_3d = rms_norm_headwise_no_params(sample_array_x3_3d, num_h_hnp)
 
-  print("\nHead-wise normalized array (x3):")
-  print(headwise_normalized_array_x3)
+  print(f"\nHead-wise normalized 3D array (x3_3d) shape: {normalized_array_x3_3d.shape}")
+  print(normalized_array_x3_3d)
 
-  # Example of a head's RMS value (optional, for verification)
-  # For the first head of the first batch and first sequence element:
-  # head_0_0_0 = sample_array_x3[0, 0, 0, :]
-  # rms_0_0_0 = np.sqrt(np.mean(np.square(head_0_0_0)) + 1e-5)
-  # print(f"\nRMS for head (0,0,0): {rms_0_0_0}")
-  # print(f"Normalized head (0,0,0) by calculation: {head_0_0_0 / rms_0_0_0}")
-  # print(f"Normalized head (0,0,0) from function: {headwise_normalized_array_x3[0, 0, 0, :]}")
+  # --- Example for rms_norm_headwise_with_params (3D input) ---
+  print("\n\n--- Example for rms_norm_headwise_with_params (3D input) ---")
+  # Create a sample 3D NumPy array for x (e.g., 1x2x12)
+  batch_s_hwp, seq_l_hwp, d_hwp = 1, 2, 12
+  sample_array_x4_3d = np.random.rand(batch_s_hwp, seq_l_hwp, d_hwp)
+  num_h_hwp = 3 # num_heads (e.g., 3, so head_dim is 4)
+  head_d_hwp = d_hwp // num_h_hwp
 
-  # --- Example for rms_norm_headwise_with_params ---
-  print("\n\n--- Example for rms_norm_headwise_with_params ---")
-  # Create a sample NumPy array for x with a 4D shape
-  # (batch_size=1, seq_len=2, num_heads=3, head_dim=4)
-  sample_array_x4 = np.random.rand(1, 2, 3, 4)
-
-  # Create a sample NumPy array for g with shape (num_heads, head_dim)
-  # For this example: (3, 4)
-  gain_params_g2 = np.ones((sample_array_x4.shape[2], sample_array_x4.shape[3]))
+  # Create a sample 2D NumPy array for g with shape (num_heads, head_dim)
+  gain_params_g2_2d = np.ones((num_h_hwp, head_d_hwp))
   # Or random gains:
-  # gain_params_g2 = np.random.rand(sample_array_x4.shape[2], sample_array_x4.shape[3]) * 2
+  # gain_params_g2_2d = np.random.rand(num_h_hwp, head_d_hwp) * 2
 
-  print("\nOriginal 4D array (x4):")
-  print(sample_array_x4)
-  print("\nGain parameters 2D (g2) shape {}:".format(gain_params_g2.shape))
-  print(gain_params_g2)
+  print(f"\nOriginal 3D array (x4_3d) shape: {sample_array_x4_3d.shape}")
+  print(sample_array_x4_3d)
+  print(f"Number of heads: {num_h_hwp}, Head dimension: {head_d_hwp}")
+  print(f"Gain parameters 2D (g2_2d) shape: {gain_params_g2_2d.shape}")
+  print(gain_params_g2_2d)
 
   # Call rms_norm_headwise_with_params with these arrays
-  scaled_headwise_normalized_array_x4 = rms_norm_headwise_with_params(sample_array_x4, gain_params_g2)
+  scaled_normalized_array_x4_3d = rms_norm_headwise_with_params(sample_array_x4_3d, gain_params_g2_2d, num_h_hwp)
 
-  print("\nHead-wise normalized and scaled array (x4):")
-  print(scaled_headwise_normalized_array_x4)
+  print(f"\nHead-wise normalized and scaled 3D array (x4_3d) shape: {scaled_normalized_array_x4_3d.shape}")
+  print(scaled_normalized_array_x4_3d)
 
   # Test shape validation (optional)
   # try:
-  #   wrong_g_shape = np.ones((sample_array_x4.shape[2] + 1, sample_array_x4.shape[3]))
-  #   rms_norm_headwise_with_params(sample_array_x4, wrong_g_shape)
+  #   wrong_g_shape = np.ones((num_h_hwp + 1, head_d_hwp))
+  #   rms_norm_headwise_with_params(sample_array_x4_3d, wrong_g_shape, num_h_hwp)
   # except ValueError as e:
   #   print(f"\nSuccessfully caught error for wrong g shape: {e}")
 
   # try:
-  #   wrong_x_shape = np.random.rand(1,2,3) # 3D instead of 4D
-  #   rms_norm_headwise_with_params(wrong_x_shape, gain_params_g2)
+  #   wrong_x_shape = np.random.rand(1,2,3,4) # 4D instead of 3D
+  #   rms_norm_headwise_with_params(wrong_x_shape, gain_params_g2_2d, num_h_hwp)
   # except ValueError as e:
   #   print(f"\nSuccessfully caught error for wrong x shape: {e}")

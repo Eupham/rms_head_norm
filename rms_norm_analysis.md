@@ -16,16 +16,16 @@ RMSNorm contributes to gradient stability primarily through its **re-scaling inv
     -   This is the simplest version. Gradient flow is straightforward, determined by the input `x` and its RMS.
 -   **`rms_norm_standard_with_params(x, g, eps)`**:
     -   The introduction of learnable gain parameters `g` adds a pathway for gradients. Gradients will flow back through the multiplication with `g`, and `g` itself will be updated. This can introduce more complexity but also allows the model to learn to modulate the normalization effect. If `g` is initialized to ones, the initial gradient flow is similar to the no-params version.
--   **`rms_norm_headwise_no_params(x, eps)`**:
-    -   Applicable to 4D tensors like `(batch, seq_len, num_heads, head_dim)`.
-    -   Normalization is applied independently to each "head" (over `head_dim`).
+-   **`rms_norm_headwise_no_params(x, num_heads, eps)`**:
+    -   Designed for inputs that are logically grouped (e.g., multi-head attention). The Python implementation takes a 3D tensor `(batch_size, seq_len, dim)` and a `num_heads` parameter. Internally, it reshapes `dim` into `num_heads * head_dim`, performs normalization independently over each `head_dim`, and then reshapes the output back to 3D.
+    -   Normalization is applied independently to each "head" (over the calculated `head_dim`).
     -   Gradient flow is contained within each head for the normalization step. This means gradients for one head's normalization will not directly influence another head's normalization process. The overall gradient stability benefit (re-scaling invariance) still applies to each head.
--   **`rms_norm_headwise_with_params(x, g, eps)`**:
-    -   Combines head-wise normalization with learnable gains. Here, `g` has shape `(num_heads, head_dim)`.
+-   **`rms_norm_headwise_with_params(x, g, num_heads, eps)`**:
+    -   Combines head-wise normalization with learnable gains. Input `x` is 3D and `num_heads` is provided. The gain `g` is expected to have shape `(num_heads, head_dim)`, where `head_dim` is `dim // num_heads`. The implementation internally reshapes `x` to 4D, applies normalization and scaling (with `g` broadcast appropriately), and then reshapes the result back to 3D.
     -   Gradients flow within each head and also through the respective gain parameters for that head. This allows each head to learn its own optimal scaling factors.
     -   The complexity of gradient paths increases, but it's a structured increase, localized per head.
 
-In general, the presence of learnable parameters (`g`) makes the gradient computation slightly more complex as gradients for `g` also need to be computed. However, this is a standard part of backpropagation. Head-wise versions do not fundamentally change gradient stability compared to standard versions, but they localize the normalization effect and thus the gradient adjustments for that step.
+In general, the presence of learnable parameters (`g`) makes the gradient computation slightly more complex as gradients for `g` also need to be computed. However, this is a standard part of backpropagation. Head-wise versions do not fundamentally change gradient stability compared to standard versions (they still offer re-scaling invariance per head), but they localize the normalization effect and thus the gradient adjustments for that step.
 
 ## 2. Accuracy
 
@@ -37,10 +37,10 @@ In general, the presence of learnable parameters (`g`) makes the gradient comput
 
 ### Head-wise Normalization:
 -   **`rms_norm_headwise_no_params`** and **`rms_norm_headwise_with_params`**:
-    -   In architectures like Transformers (specifically multi-head attention), different heads are designed to capture different types of information or relationships.
+    -   In architectures like Transformers (specifically multi-head attention), different heads are designed to capture different types of information or relationships. The provided Python implementations for these head-wise versions accept a 3D input `x (batch, seq_len, dim)` and a `num_heads` parameter. They internally reshape `x` to `(batch, seq_len, num_heads, head_dim)` for normalization over `head_dim` and then reshape the output back to 3D.
     -   Head-wise normalization allows each head to be normalized based on its own statistics. This can be beneficial if the statistical properties of activations vary significantly across heads.
-    -   Standard normalization (across the entire embedding dimension, which might be `num_heads * head_dim` if flattened) could average out these head-specific statistics, potentially suppressing important information in heads with smaller activation magnitudes or over-amplifying noisy heads.
-    -   Fine-grained control offered by head-wise normalization (especially with parameters) can preserve the unique contribution of each head, leading to better accuracy in such models.
+    -   Standard normalization (across the entire embedding dimension, `dim`, which would be `num_heads * head_dim` if flattened) could average out these head-specific statistics, potentially suppressing important information in heads with smaller activation magnitudes or over-amplifying noisy heads.
+    -   Fine-grained control offered by head-wise normalization (especially with parameters, where `g` is `(num_heads, head_dim)`) can preserve the unique contribution of each head, leading to better accuracy in such models.
 
 ### Simpler (No Parameters) Versions:
 -   **`rms_norm_standard_no_params`** and **`rms_norm_headwise_no_params`**:
@@ -53,34 +53,37 @@ In general, the presence of learnable parameters (`g`) makes the gradient comput
 
 ## 3. Speed (Computational Cost)
 
-Let D be the size of the last dimension (e.g., `embedding_dim` or `head_dim`).
-Let N be the total number of elements (e.g., `batch_size * seq_len * D` or `batch_size * seq_len * num_heads * head_dim`).
+Let `dim_total` be the size of the full dimension being normalized over in standard variants, or `dim = num_heads * head_dim` for head-wise variants.
+Let N be the total number of elements in `x` (e.g., `batch_size * seq_len * dim_total`).
 
 ### Comparison of RMSNorm Versions:
 1.  **`rms_norm_standard_no_params(x, eps)`**:
-    -   Square `x`: N element-wise operations.
-    -   Mean of squares along D: N/D sums and N/D divisions (approximately).
-    -   Add `eps`, sqrt: N/D operations each.
-    -   Divide `x` by RMS: N element-wise operations.
+    -   Input `x` has dimension `dim_total` as its last axis.
+    -   Square `x`: N operations.
+    -   Mean of squares along `dim_total`: N/`dim_total` sums and divisions.
+    -   Add `eps`, sqrt: N/`dim_total` operations each.
+    -   Divide `x` by RMS: N operations.
     -   **Baseline RMSNorm cost.**
 
 2.  **`rms_norm_standard_with_params(x, g, eps)`**:
-    -   Same as `rms_norm_standard_no_params`.
+    -   Similar to above. `g` is 1D of size `dim_total`.
     -   Additional element-wise multiplication by `g`: N operations.
     -   **Slightly higher cost due to gain multiplication.**
 
-3.  **`rms_norm_headwise_no_params(x, eps)`**: (x is `B, S, H, D_h`)
-    -   Let N = `B*S*H*D_h`. The normalization is over `D_h`. Number of RMS calculations = `B*S*H`.
-    -   Square `x`: N element-wise operations.
-    -   Mean of squares along `D_h`: `B*S*H` means, each over `D_h` elements.
+3.  **`rms_norm_headwise_no_params(x, num_heads, eps)`**:
+    -   Input `x` is 3D `(B, S, dim)`. Internally reshaped to `(B, S, H, D_h)`, where `H` is `num_heads` and `D_h` is `dim // num_heads`. Normalization is over `D_h`.
+    -   Let N = `B*S*dim`. Number of RMS calculations = `B*S*H`.
+    -   Reshaping: Metadata operation, negligible cost.
+    -   Square `x_reshaped`: N operations.
+    -   Mean of squares along `D_h`: `B*S*H` means, each over `D_h` elements. Total reduction ops similar to standard.
     -   Add `eps`, sqrt: `B*S*H` operations each.
-    -   Divide `x` by RMS: N element-wise operations (broadcasting the `B,S,H,1` RMS tensor).
-    -   If `D` in the standard version is `H*D_h`, the total number of elements N is the same. The fundamental operations (square, mean, sqrt, divide) are on the same total number of elements.
-    -   The main difference is the granularity of the mean and sqrt. Modern hardware can parallelize these `B*S*H` independent calculations efficiently. If `D_h` is very small and `H` is large, this might offer some parallelization benefits during the reduction step compared to a single large reduction over `D = H*D_h`. However, the overall FLOPs remain very similar to `rms_norm_standard_no_params` for the same total feature dimension.
+    -   Divide `x_reshaped` by RMS: N operations (broadcasting the `B,S,H,1` RMS tensor).
+    -   Final reshape: Metadata operation.
+    -   The overall FLOPs remain very similar to `rms_norm_standard_no_params` if `dim` is the same as `dim_total`. The main difference is the granularity of the mean and sqrt. Modern hardware can parallelize these `B*S*H` independent calculations efficiently. This might offer parallelization benefits if `D_h` is small and `H` is large.
 
-4.  **`rms_norm_headwise_with_params(x, g, eps)`**: (g is `H, D_h`)
-    -   Same as `rms_norm_headwise_no_params`.
-    -   Additional element-wise multiplication by `g` (reshaped to `1,1,H,D_h` and broadcasted): N operations.
+4.  **`rms_norm_headwise_with_params(x, g, num_heads, eps)`**:
+    -   Similar to `rms_norm_headwise_no_params`. `g` is `(H, D_h)`.
+    -   Additional element-wise multiplication by `g` (reshaped to `1,1,H,D_h` and broadcasted to the 4D tensor): N operations.
     -   **Slightly higher cost than `rms_norm_headwise_no_params` due to gain multiplication.**
 
 ### Comparison with LayerNorm:
@@ -101,9 +104,9 @@ A standard LayerNorm typically involves:
 **Conclusion on Speed:**
 -   All RMSNorm versions should be **faster** than a full LayerNorm because they skip the mean calculation and subtraction step.
 -   The versions with parameters (`_with_params`) add a minimal overhead (one element-wise multiplication) compared to their no-parameter counterparts.
--   Head-wise versions have similar computational complexity to standard versions for the same total number of features, but the specific performance on parallel hardware (like GPUs in Triton) might vary based on implementation details and dimensions (`num_heads`, `head_dim`). The reshaping of `g` in `rms_norm_headwise_with_params` is typically a metadata operation and incurs negligible cost.
+-   Head-wise versions have similar computational complexity to standard versions for the same total number of features. The internal reshaping operations for 3D inputs are typically metadata changes with negligible direct computational cost. The specific performance on parallel hardware (like GPUs in Triton) might vary based on implementation details and the resulting memory access patterns for the `(num_heads, head_dim)` structure. The reshaping of `g` in `rms_norm_headwise_with_params` is also a metadata operation.
 
-For Triton/PyTorch implementation, the focus would be on efficient parallel reduction for the mean of squares and element-wise operations, which GPUs excel at.
+For Triton/PyTorch implementation, the focus would be on efficient parallel reduction for the mean of squares and element-wise operations, which GPUs excel at. The choice between a direct 4D implementation (if data is already in that format) versus a 3D input with internal reshaping (as in the current Python code) would depend on the typical data layout in the target models.
 
 ## 4. Generalizability & Use Cases
 
@@ -113,10 +116,10 @@ For Triton/PyTorch implementation, the focus would be on efficient parallel redu
     -   `rms_norm_standard_with_params` is generally preferred due to its increased capacity, unless the slight overhead is a concern or the simplest possible model is desired.
 
 ### Head-wise Normalization Specifics:
--   **`rms_norm_headwise_no_params`** and **`rms_norm_headwise_with_params`** are specialized for inputs where features are grouped, and each group should be normalized independently.
-    -   **Primary Use Case:** Multi-Head Attention (MHA) layers in Transformers. Here, `x` would be `(batch_size, seq_len, num_heads, head_dim)`. Normalizing each head's `head_dim` activations independently can preserve the unique characteristics learned by each head.
-    -   Could also be useful in other scenarios where features are naturally grouped, e.g., different modalities in a multi-modal network processed in parallel before fusion, or convolutional networks with grouped convolutions if applied channel-wise per group.
-    -   `rms_norm_headwise_with_params` is particularly powerful here, as it allows the model to learn optimal scaling for each head and each feature within each head.
+-   **`rms_norm_headwise_no_params(x, num_heads, eps)`** and **`rms_norm_headwise_with_params(x, g, num_heads, eps)`** are specialized for inputs where the feature dimension (`dim`) can be logically divided into `num_heads` groups of size `head_dim`. The provided Python functions take a 3D tensor `x (batch_size, seq_len, dim)` and a `num_heads` parameter, then internally reshape `x` to 4D `(batch_size, seq_len, num_heads, head_dim)` for the normalization and (optional) scaling steps, before reshaping the result back to 3D.
+    -   **Primary Use Case:** Multi-Head Attention (MHA) layers in Transformers. If the MHA output is initially `(batch, seq, dim)` (i.e., heads have been concatenated), these functions can apply head-specific normalization. Normalizing each head's `head_dim` activations independently can preserve the unique characteristics learned by each head.
+    -   Could also be useful in other scenarios where a flat feature vector actually represents concatenated groups of features that would benefit from separate normalization statistics.
+    -   `rms_norm_headwise_with_params` is particularly powerful here, as `g` (with shape `(num_heads, head_dim)`) allows the model to learn optimal scaling for each feature within each head.
 
 ### Parameters vs. No Parameters:
 -   **With Parameters (`_with_params` versions):**
