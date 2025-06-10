@@ -213,28 +213,36 @@ if __name__ == "__main__":
   print("\nNormalized and scaled array (x2):")
   print(scaled_normalized_array_x2)
 
-  # --- Example for rms_norm_headwise_no_params ---
-  print("\n\n--- Example for rms_norm_headwise_no_params ---")
-  # Create a sample NumPy array for x with a 4D shape
-  # (batch_size=1, seq_len=2, num_heads=3, head_dim=4)
-  sample_array_x3 = np.random.rand(1, 2, 3, 4)
+  # --- Example for rms_norm_headwise_no_params (3D input) ---
+  print("\n\n--- Example for rms_norm_headwise_no_params (3D input) ---")
+  # Create a sample 3D NumPy array for x (e.g., 1x2x12 for batch_size=1, seq_len=2, dim=12)
+  batch_s_hnp, seq_l_hnp, d_hnp = 1, 2, 12 # Renamed to avoid conflict
+  sample_array_x3_3d = np.random.rand(batch_s_hnp, seq_l_hnp, d_hnp)
+  num_h_hnp = 3 # num_heads (e.g., 3, so head_dim would be 4)
 
-  print("\nOriginal 4D array (x3):")
-  print(sample_array_x3)
+  print(f"\nOriginal 3D array (sample_array_x3_3d) shape: {sample_array_x3_3d.shape}")
+  print(sample_array_x3_3d)
+  print(f"Number of heads for x3_3d: {num_h_hnp}")
 
-  # Call rms_norm_headwise_no_params with this array
-  headwise_normalized_array_x3 = rms_norm_headwise_no_params(sample_array_x3)
+  # Call rms_norm_headwise_no_params with this 3D array and num_heads
+  # This is the corrected call:
+  normalized_array_x3_3d = rms_norm_headwise_no_params(sample_array_x3_3d, num_h_hnp)
 
-  print("\nHead-wise normalized array (x3):")
-  print(headwise_normalized_array_x3)
+  print(f"\nHead-wise normalized 3D array (normalized_array_x3_3d) shape: {normalized_array_x3_3d.shape}")
+  print(normalized_array_x3_3d)
 
-  # Example of a head's RMS value (optional, for verification)
-  # For the first head of the first batch and first sequence element:
-  # head_0_0_0 = sample_array_x3[0, 0, 0, :]
-  # rms_0_0_0 = np.sqrt(np.mean(np.square(head_0_0_0)) + 1e-5)
-  # print(f"\nRMS for head (0,0,0): {rms_0_0_0}")
-  # print(f"Normalized head (0,0,0) by calculation: {head_0_0_0 / rms_0_0_0}")
-  # print(f"Normalized head (0,0,0) from function: {normalized_array_x3_3d.reshape(batch_s, seq_l, num_h, -1)[0,0,0,:]}") # Reshape to check head
+  # Optional: Verification for a specific head can be done by reshaping the output and comparing
+  # original_reshaped_x3 = sample_array_x3_3d.reshape(batch_s_hnp, seq_l_hnp, num_h_hnp, d_hnp // num_h_hnp)
+  # normalized_reshaped_x3 = normalized_array_x3_3d.reshape(batch_s_hnp, seq_l_hnp, num_h_hnp, d_hnp // num_h_hnp)
+  # head_0_0_0_original = original_reshaped_x3[0,0,0,:]
+  # head_0_0_0_normalized_fn = normalized_reshaped_x3[0,0,0,:]
+  # rms_0_0_0_manual = np.sqrt(np.mean(np.square(head_0_0_0_original)) + 1e-5)
+  # head_0_0_0_normalized_manual = head_0_0_0_original / rms_0_0_0_manual
+  # print(f"\nVerification for head (0,0,0) of x3_3d:")
+  # print(f"  Original: {head_0_0_0_original}")
+  # print(f"  Normalized by function: {head_0_0_0_normalized_fn}")
+  # print(f"  Normalized manually: {head_0_0_0_normalized_manual}")
+  # print(f"  RMS manually: {rms_0_0_0_manual}")
 
 
 def rms_norm_headwise_with_params(x, g, num_heads, eps=1e-5):
